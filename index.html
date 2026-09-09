@@ -25,11 +25,15 @@
 <!-- Babel Standalone — lets this file transform its own JSX in the browser, so it runs from a
      plain double-click with no build step. (A production deployment would normally pre-compile
      this instead; kept as in-browser Babel here so it stays a single portable file.) -->
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <!-- PapaParse — CSV parsing for the sales-sheet uploader -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- Firebase (compat SDK — works as plain globals, no bundler needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useMemo, useRef, useEffect } = React;
 
 // ---------- Design tokens ----------
@@ -68,32 +72,49 @@ const LIGHT = {
 const ThemeContext = React.createContext(DARK);
 function useTheme() { return React.useContext(ThemeContext); }
 
-// ---------- Storage abstraction ----------
-// Uses the Claude artifact "window.storage" API when available (true
-// cross-user sharing when this runs inside Claude). Falls back to this
-// browser's localStorage when opened as a plain standalone HTML file, so
-// the dashboard still works on its own — just without cross-device sharing
-// in that mode (data stays on whichever browser saved it).
-const HAS_CLOUD_STORAGE = typeof window !== "undefined" && !!window.storage;
+// ---------- Firebase config ----------
+// Fill these in from your Firebase project (console.firebase.google.com →
+// Project settings → General → "Your apps" → SDK setup and config).
+// Leave the placeholder values as-is and the app will show setup
+// instructions instead of trying (and failing) to connect.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBMNtfvlq6ipTg-UdAU-bbgivfWFnKynw4",
+  authDomain: "fsm-sales-dashboard.firebaseapp.com",
+  projectId: "fsm-sales-dashboard",
+  storageBucket: "fsm-sales-dashboard.firebasestorage.app",
+  messagingSenderId: "1073161399060",
+  appId: "1:1073161399060:web:011b62f9508e598f95b001",
+  measurementId: "G-9Z6375BB0W",
+};
+const FIREBASE_NOT_CONFIGURED = FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
 
-async function storageGetValue(key, shared) {
-  if (HAS_CLOUD_STORAGE) {
-    try {
-      const res = await window.storage.get(key, shared);
-      return res ? res.value : null;
-    } catch (e) { return null; }
-  }
-  try { return localStorage.getItem(key); } catch (e) { return null; }
+let fbApp = null, fbAuth = null, fbDb = null;
+if (!FIREBASE_NOT_CONFIGURED) {
+  fbApp = firebase.initializeApp(FIREBASE_CONFIG);
+  fbAuth = firebase.auth();
+  fbDb = firebase.firestore();
 }
 
-async function storageSetValue(key, value, shared) {
-  if (HAS_CLOUD_STORAGE) {
-    try {
-      const res = await window.storage.set(key, value, shared);
-      return !!res;
-    } catch (e) { return false; }
-  }
-  try { localStorage.setItem(key, value); return true; } catch (e) { return false; }
+// ---------- Storage layer (Firestore) ----------
+// Every dashboard "document" (sales sheets, budgets) lives in a single
+// Firestore collection, one document per key. Reads are open to anyone per
+// the security rules; writes require a signed-in user (see setup notes).
+const FS_COLLECTION = "fsm-dashboard";
+
+async function storageGetValue(key) {
+  if (!fbDb) return null;
+  try {
+    const doc = await fbDb.collection(FS_COLLECTION).doc(key).get();
+    return doc.exists ? doc.data().value : null;
+  } catch (e) { return null; }
+}
+
+async function storageSetValue(key, value) {
+  if (!fbDb) return false;
+  try {
+    await fbDb.collection(FS_COLLECTION).doc(key).set({ value, updatedAt: Date.now() });
+    return true;
+  } catch (e) { return false; }
 }
 
 const FONT_LINK_ID = "fsm-fonts";
@@ -392,55 +413,42 @@ function FSMDashboard() {
     });
   }
 
-  // Edit access gate — a shared passcode restricts who can upload sales
-  // sheets, set budgets, or remove sheets. Viewing the dashboard stays open
-  // to everyone. This is a soft, honor-system gate (no real backend/auth
-  // exists here) — good enough to stop casual edits, not a security control.
-  const [editPasscode, setEditPasscode] = useState(null); // null = loading, "" = none set yet
-  const [isEditor, setIsEditor] = useState(() => {
-    try { return sessionStorage.getItem("fsm-is-editor") === "1"; } catch (e) { return false; }
-  });
-  const [passcodeInput, setPasscodeInput] = useState("");
-  const [passcodeError, setPasscodeError] = useState("");
+  // Edit access — Firebase Authentication. Anyone can view the dashboard;
+  // only people signed in (accounts added by an admin in the Firebase
+  // console → Authentication tab) can upload sheets, remove sheets, or set
+  // budgets. This is enforced server-side by Firestore security rules, not
+  // just hidden in the UI — a real access control, not an honor system.
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [signInEmail, setSignInEmail] = useState("");
+  const [signInPassword, setSignInPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const isEditor = !!authUser;
 
   React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const val = await storageGetValue("fsm-edit-passcode", true);
-      if (!cancelled) setEditPasscode(val || "");
-    })();
-    return () => { cancelled = true; };
+    if (!fbAuth) { setAuthLoading(false); return; }
+    const unsub = fbAuth.onAuthStateChanged((user) => {
+      setAuthUser(user);
+      setAuthLoading(false);
+    });
+    return () => unsub();
   }, []);
 
-  async function setNewPasscode(code) {
-    const trimmed = code.trim();
-    if (!trimmed) return;
-    const ok = await storageSetValue("fsm-edit-passcode", trimmed, true);
-    if (ok) {
-      setEditPasscode(trimmed);
-      setIsEditor(true);
-      try { sessionStorage.setItem("fsm-is-editor", "1"); } catch (e) {}
-      setPasscodeInput("");
-      setPasscodeError("");
-    } else {
-      setPasscodeError("Couldn't save the passcode — try again.");
+  async function handleSignIn() {
+    if (!fbAuth) return;
+    setAuthError("");
+    try {
+      await fbAuth.signInWithEmailAndPassword(signInEmail.trim(), signInPassword);
+      setSignInPassword("");
+    } catch (e) {
+      setAuthError(e.code === "auth/invalid-credential" || e.code === "auth/wrong-password" || e.code === "auth/user-not-found"
+        ? "Email or password doesn't match an editor account."
+        : "Couldn't sign in — check the console for details.");
     }
   }
 
-  function tryUnlock(code) {
-    if (code === editPasscode) {
-      setIsEditor(true);
-      try { sessionStorage.setItem("fsm-is-editor", "1"); } catch (e) {}
-      setPasscodeInput("");
-      setPasscodeError("");
-    } else {
-      setPasscodeError("That code doesn't match.");
-    }
-  }
-
-  function lockEditing() {
-    setIsEditor(false);
-    try { sessionStorage.removeItem("fsm-is-editor"); } catch (e) {}
+  function handleSignOut() {
+    if (fbAuth) fbAuth.signOut();
   }
 
 
@@ -854,54 +862,50 @@ function FSMDashboard() {
 
         <div style={{ marginTop: 26, padding: "12px 8px", borderTop: `1px solid ${T.line}` }}>
           <div style={{ fontSize: 11, color: T.sandDim, marginBottom: 8 }}>EDIT ACCESS</div>
-          {editPasscode === null ? (
+          {FIREBASE_NOT_CONFIGURED ? (
+            <div style={{ fontSize: 11.5, color: T.amber, lineHeight: 1.5 }}>
+              Firebase isn't configured yet — see the setup banner above. Sign-in will work once it's connected.
+            </div>
+          ) : authLoading ? (
             <div style={{ fontSize: 11.5, color: T.sandDim }}>Checking…</div>
           ) : isEditor ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.green }}>
-                <Icon name="unlock" size={13} /> Editing unlocked
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.green, overflow: "hidden" }}>
+                <Icon name="unlock" size={13} style={{ flexShrink: 0 }} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={authUser.email}>{authUser.email}</span>
               </div>
-              <button onClick={lockEditing} title="Lock editing" style={{ background: "none", border: "none", color: T.sandDim, cursor: "pointer", padding: 2 }}>
+              <button onClick={handleSignOut} title="Sign out" style={{ background: "none", border: "none", color: T.sandDim, cursor: "pointer", padding: 2, flexShrink: 0 }}>
                 <Icon name="x" size={12} />
-              </button>
-            </div>
-          ) : editPasscode === "" ? (
-            <div>
-              <div style={{ fontSize: 11.5, color: T.sandDim, marginBottom: 6, lineHeight: 1.5 }}>
-                No edit passcode set yet. Set one now — only people with this code will be able to upload sheets or set budgets.
-              </div>
-              <input
-                type="password" value={passcodeInput} onChange={(e) => setPasscodeInput(e.target.value)}
-                placeholder="Choose a passcode"
-                style={{ width: "100%", background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand, padding: "6px 8px", fontSize: 12.5, marginBottom: 6, boxSizing: "border-box" }}
-              />
-              <button
-                onClick={() => setNewPasscode(passcodeInput)}
-                style={{ width: "100%", background: "none", border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand, padding: "6px 8px", fontSize: 12.5, cursor: "pointer" }}
-              >
-                Set passcode
               </button>
             </div>
           ) : (
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.sandDim, marginBottom: 6 }}>
-                <Icon name="lock" size={13} /> View-only — enter code to edit
+                <Icon name="lock" size={13} /> View-only — sign in to edit
               </div>
               <input
-                type="password" value={passcodeInput} onChange={(e) => setPasscodeInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && tryUnlock(passcodeInput)}
-                placeholder="Access code"
+                type="email" value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)}
+                placeholder="Email"
+                style={{ width: "100%", background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand, padding: "6px 8px", fontSize: 12.5, marginBottom: 6, boxSizing: "border-box" }}
+              />
+              <input
+                type="password" value={signInPassword} onChange={(e) => setSignInPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSignIn()}
+                placeholder="Password"
                 style={{ width: "100%", background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand, padding: "6px 8px", fontSize: 12.5, marginBottom: 6, boxSizing: "border-box" }}
               />
               <button
-                onClick={() => tryUnlock(passcodeInput)}
+                onClick={handleSignIn}
                 style={{ width: "100%", background: "none", border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand, padding: "6px 8px", fontSize: 12.5, cursor: "pointer" }}
               >
-                Unlock editing
+                Sign in
               </button>
+              <div style={{ fontSize: 10.5, color: T.sandDim, marginTop: 6, lineHeight: 1.5 }}>
+                Editor accounts are added in the Firebase console — ask whoever set this dashboard up.
+              </div>
             </div>
           )}
-          {passcodeError && <div style={{ fontSize: 11, color: T.red, marginTop: 6 }}>{passcodeError}</div>}
+          {authError && <div style={{ fontSize: 11, color: T.red, marginTop: 6 }}>{authError}</div>}
         </div>
 
         <div style={{ marginTop: 14, padding: "12px 8px", borderTop: `1px solid ${T.line}` }}>
@@ -966,6 +970,23 @@ function FSMDashboard() {
 
       {/* Main */}
       <div style={{ flex: 1, padding: "22px 28px", maxWidth: 1180 }}>
+        {FIREBASE_NOT_CONFIGURED && (
+          <div style={{
+            background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 4,
+            padding: "14px 16px", marginBottom: 20, fontSize: 12.5, color: T.sand, lineHeight: 1.7,
+          }}>
+            <div style={{ fontFamily: "'Oswald'", fontSize: 14, color: T.amber, marginBottom: 6 }}>
+              Firebase not connected — running on sample data only
+            </div>
+            Everyone currently sees the same built-in March 2026 sample, and uploads/budgets won't save.
+            To connect real shared storage: create a free project at{" "}
+            <span style={{ color: T.cyan }}>console.firebase.google.com</span>, enable{" "}
+            <b>Firestore Database</b> and <b>Authentication → Email/Password</b>, add editor accounts
+            under Authentication → Users, then paste your project's config into the{" "}
+            <span style={{ fontFamily: "'IBM Plex Mono'" }}>FIREBASE_CONFIG</span> object near the top of
+            this file's source and set the Firestore security rules as documented alongside this file.
+          </div>
+        )}
         {/* Period bar */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 22 }}>
           <select value={month} onChange={(e) => setMonth(+e.target.value)} style={selectStyle}>
@@ -1423,6 +1444,27 @@ function FSMDashboard() {
 const rootEl = document.getElementById("root");
 ReactDOM.createRoot(rootEl).render(<FSMDashboard />);
 
+</script>
+
+<!-- Manually transform + run the app source above, instead of relying on Babel Standalone's
+     automatic <script type="text/babel"> page-scan (which had a version-drift bug causing
+     "Cannot use import statement outside a module" on some Babel Standalone releases). This
+     gives us explicit control over sourceType so it can never be misdetected as an ES module. -->
+<script>
+  (function () {
+    var src = document.getElementById("app-source").textContent;
+    try {
+      var output = Babel.transform(src, { presets: ["react"], sourceType: "script" }).code;
+      var s = document.createElement("script");
+      s.textContent = output;
+      document.body.appendChild(s);
+    } catch (err) {
+      document.getElementById("root").innerHTML =
+        '<div style="padding:40px;font-family:sans-serif;color:#D9695F;white-space:pre-wrap;">' +
+        "Failed to start the dashboard:\n\n" + (err && err.message ? err.message : err) + "</div>";
+      console.error(err);
+    }
+  })();
 </script>
 </body>
 </html>
