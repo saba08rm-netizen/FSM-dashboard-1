@@ -117,6 +117,56 @@ async function storageSetValue(key, value) {
   } catch (e) { return false; }
 }
 
+// Firestore caps a single document at ~1MB. Sales data is aggregated before
+// it ever reaches here (see handleUpload), which keeps almost everything
+// under that limit — but as a safety net for unusually large uploads, these
+// chunked variants split a big JSON string across multiple documents
+// (key::chunk0, key::chunk1, …) plus a small key::meta manifest, and
+// transparently reassemble it on read. Falls back to the plain single-doc
+// path for anything already small enough (including old data saved before
+// this existed).
+const FS_CHUNK_SIZE = 700000; // characters per chunk, safely under the 1MB doc cap
+
+async function storageGetChunked(key) {
+  if (!fbDb) return null;
+  try {
+    const metaDoc = await fbDb.collection(FS_COLLECTION).doc(`${key}::meta`).get();
+    if (metaDoc.exists) {
+      const { chunks } = metaDoc.data();
+      const parts = await Promise.all(
+        Array.from({ length: chunks }, (_, i) => fbDb.collection(FS_COLLECTION).doc(`${key}::chunk${i}`).get())
+      );
+      return parts.map((p) => (p.exists ? p.data().value : "")).join("");
+    }
+    // No chunked manifest — fall back to a plain single document (older / smaller saves)
+    return await storageGetValue(key);
+  } catch (e) { return null; }
+}
+
+async function storageSetChunked(key, value) {
+  if (!fbDb) return false;
+  try {
+    if (value.length <= FS_CHUNK_SIZE) {
+      // Small enough for a single document — also clear any stale chunk manifest
+      // from a previous, larger version of this same key.
+      await fbDb.collection(FS_COLLECTION).doc(key).set({ value, updatedAt: Date.now() });
+      const oldMeta = await fbDb.collection(FS_COLLECTION).doc(`${key}::meta`).get();
+      if (oldMeta.exists) await fbDb.collection(FS_COLLECTION).doc(`${key}::meta`).delete();
+      return true;
+    }
+    const chunkCount = Math.ceil(value.length / FS_CHUNK_SIZE);
+    const batch = fbDb.batch();
+    for (let i = 0; i < chunkCount; i++) {
+      const chunkVal = value.slice(i * FS_CHUNK_SIZE, (i + 1) * FS_CHUNK_SIZE);
+      batch.set(fbDb.collection(FS_COLLECTION).doc(`${key}::chunk${i}`), { value: chunkVal, updatedAt: Date.now() });
+    }
+    batch.set(fbDb.collection(FS_COLLECTION).doc(`${key}::meta`), { chunks: chunkCount, updatedAt: Date.now() });
+    batch.delete(fbDb.collection(FS_COLLECTION).doc(key)); // clear any old single-doc version
+    await batch.commit();
+    return true;
+  } catch (e) { return false; }
+}
+
 const FONT_LINK_ID = "fsm-fonts";
 if (typeof document !== "undefined" && !document.getElementById(FONT_LINK_ID)) {
   const l = document.createElement("link");
@@ -157,6 +207,42 @@ function parseSapNum(s) {
   if (cleaned === "" || cleaned === "-") return 0;
   const v = parseFloat(cleaned);
   return isNaN(v) ? 0 : v;
+}
+
+// Collapses raw transaction-level rows into one summed row per month for
+// each unique customer/island/atoll/shipping-point/product/category/channel
+// combination. Every breakdown in this dashboard works at month granularity
+// or coarser, so this loses nothing the app actually uses while shrinking
+// a raw SAP export (which can be tens of megabytes across many months) down
+// to something that comfortably fits Firestore's per-document size limit.
+function aggregateRows(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = [r.year, r.month, r.customer, r.island, r.atoll || "", r.shippingPoint || "", r.product || "", r.category || "", r.channel || ""].join("|");
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        date: r.date, year: r.year, month: r.month,
+        customer: r.customer, island: r.island, atoll: r.atoll || "",
+        shippingPoint: r.shippingPoint || "", product: r.product || "",
+        category: r.category || "", channel: r.channel || "",
+        quantity: 0, value: 0, cogs: 0, margin: 0,
+      };
+      groups.set(key, g);
+    }
+    g.quantity += r.quantity || 0;
+    g.value += r.value || 0;
+    g.cogs += r.cogs || 0;
+    g.margin += r.margin || 0;
+  }
+  return Array.from(groups.values()).map((g) => ({
+    ...g,
+    rate: g.quantity ? +(g.value / g.quantity).toFixed(4) : 0,
+    quantity: +g.quantity.toFixed(1),
+    value: +g.value.toFixed(2),
+    cogs: +g.cogs.toFixed(2),
+    margin: +g.margin.toFixed(2),
+  }));
 }
 
 // ---------- Small UI atoms ----------
@@ -377,7 +463,6 @@ function ChartLegend({ seriesKeys, colors, T }) {
 
 const NAV = [
   { key: "overview", label: "Overview", icon: "gauge" },
-  { key: "budget", label: "Budget", icon: "target" },
   { key: "yoy", label: "Year on year", icon: "trendingup" },
   { key: "breakdowns", label: "Locations", icon: "mappin" },
   { key: "categories", label: "Categories", icon: "layers" },
@@ -487,7 +572,7 @@ function FSMDashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const val = await storageGetValue("fsm-sales-batches", true);
+        const val = await storageGetChunked("fsm-sales-batches");
         if (!cancelled && val) {
           const parsed = JSON.parse(val);
           if (Array.isArray(parsed)) setBatches(parsed);
@@ -504,7 +589,7 @@ function FSMDashboard() {
   async function saveShared(nextBatches) {
     setSavingShared(true);
     try {
-      const ok = await storageSetValue("fsm-sales-batches", JSON.stringify(nextBatches), true);
+      const ok = await storageSetChunked("fsm-sales-batches", JSON.stringify(nextBatches));
       if (!ok) setUploadError("Saved locally, but shared storage failed — others won't see this update.");
     } catch (err) {
       setUploadError("Saved locally, but shared storage failed — others won't see this update.");
@@ -604,12 +689,14 @@ function FSMDashboard() {
           }).filter((r) => r.customer && r.quantity > 0 && !isNaN(r.year));
           if (rows.length === 0) throw new Error("No valid rows found");
 
+          const aggregatedRows = aggregateRows(rows);
+
           // A re-upload of the same filename replaces that sheet in place;
           // a new filename is added alongside the others.
           const label = file.name;
           setBatches((prev) => {
             const withoutMatch = prev.filter((b) => b.label !== label);
-            const next = [...withoutMatch, { id: `${label}-${Date.now()}`, label, uploadedAt: new Date().toISOString(), rows }];
+            const next = [...withoutMatch, { id: `${label}-${Date.now()}`, label, uploadedAt: new Date().toISOString(), rows: aggregatedRows, rawRowCount: rows.length }];
             saveShared(next);
             return next;
           });
@@ -833,10 +920,10 @@ function FSMDashboard() {
       <div style={{ width: 210, borderRight: `1px solid ${T.line}`, padding: "22px 14px", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px 4px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="26" height="26" viewBox="0 0 32 32" fill="none">
-              <path d="M16 3c5 6 9 10.8 9 15.4A9 9 0 1 1 7 18.4C7 13.8 11 9 16 3z" fill={T.amber} />
-              <path d="M16 12c2.6 3.1 4.6 5.5 4.6 7.8a4.6 4.6 0 1 1-9.2 0c0-2.3 2-4.7 4.6-7.8z" fill={T.bg} opacity="0.55" />
-            </svg>
+            <img
+              src="data:image/png;base64,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" alt="FSM logo" width="26" height="26"
+              style={{ borderRadius: 6, background: "#fff", padding: 2, objectFit: "contain", flexShrink: 0 }}
+            />
             <div style={{ fontFamily: "'Oswald'", fontSize: 19, color: T.sand, fontWeight: 600, letterSpacing: 0.3, lineHeight: 1 }}>
               FSM
             </div>
@@ -922,8 +1009,15 @@ function FSMDashboard() {
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   gap: 6, padding: "5px 0", borderBottom: `1px solid ${T.line}`,
                 }}>
-                  <div style={{ fontSize: 11.5, color: T.sand, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={b.label}>
-                    {b.label}
+                  <div style={{ overflow: "hidden", flex: 1 }}>
+                    <div style={{ fontSize: 11.5, color: T.sand, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={b.label}>
+                      {b.label}
+                    </div>
+                    {b.rawRowCount != null && (
+                      <div style={{ fontSize: 10, color: T.sandDim }}>
+                        {b.rawRowCount.toLocaleString()} rows → {b.rows.length.toLocaleString()} summarized
+                      </div>
+                    )}
                   </div>
                   {isEditor && (
                     <button
@@ -958,6 +1052,7 @@ function FSMDashboard() {
                 name replaces that sheet; a new filename adds alongside it. Upload your raw
                 FSM SAP billing export as-is (no reformatting needed) or a simplified CSV with
                 Date, Customer, Island, Shipping Point, Product, Quantity, Rate, Sales Value.
+                Rows are automatically summarized by month so very large exports still save.
               </div>
             </>
           ) : (
@@ -999,6 +1094,73 @@ function FSMDashboard() {
             vs {MONTHS[month]} {year - 1} <Icon name="chevronright" size={11} style={{ display: "inline", verticalAlign: -1 }} />
           </div>
         </div>
+
+        {/* Live budget strip — tracks whichever month/year is selected above */}
+        {(() => {
+          const r = monthlyBudgetRows.find((row) => row.m === month) || {};
+          const attain = r.attainVol != null ? r.attainVol : r.attainVal;
+          let status = "No budget set", statusColor = T.sandDim;
+          if (!r.hasActual) { status = "No data yet"; statusColor = T.sandDim; }
+          else if (attain != null) {
+            if (attain >= 100) { status = "On track"; statusColor = T.green; }
+            else if (attain >= 80) { status = "Behind"; statusColor = T.amber; }
+            else { status = "At risk"; statusColor = T.red; }
+          }
+          return (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap",
+              marginBottom: 18, padding: "12px 16px", background: T.panel,
+              border: `1px solid ${T.line}`, borderRadius: 4,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.sandDim, flexShrink: 0 }}>
+                <Icon name="target" size={14} />
+                Budget — {MONTHS[month]} {year}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <span style={{ color: T.sandDim }}>Volume:</span>
+                {isEditor ? (
+                  <input
+                    key={`vol-${r.key}`} type="number" defaultValue={r.budgetVol || ""}
+                    onBlur={(e) => saveBudget(r.key, "volume", e.target.value)}
+                    placeholder="set target"
+                    style={{ width: 100, background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 3, color: T.sand, padding: "4px 6px", fontSize: 13 }}
+                  />
+                ) : (
+                  <span style={{ color: T.sand, fontFamily: "'IBM Plex Mono'" }}>{r.budgetVol ? fmtL(r.budgetVol) : "—"}</span>
+                )}
+                <span style={{ color: T.sandDim }}>vs actual</span>
+                <span style={{ color: T.sand, fontFamily: "'Oswald'", fontWeight: 600 }}>{r.hasActual ? fmtL(r.actualVol) : "—"}</span>
+                {r.hasActual && r.attainVol != null && (
+                  <span style={{ color: T.sandDim, fontFamily: "'IBM Plex Mono'" }}>({r.attainVol.toFixed(0)}%)</span>
+                )}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <span style={{ color: T.sandDim }}>Value:</span>
+                {isEditor ? (
+                  <input
+                    key={`val-${r.key}`} type="number" defaultValue={r.budgetVal || ""}
+                    onBlur={(e) => saveBudget(r.key, "value", e.target.value)}
+                    placeholder="set target"
+                    style={{ width: 110, background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 3, color: T.sand, padding: "4px 6px", fontSize: 13 }}
+                  />
+                ) : (
+                  <span style={{ color: T.sand, fontFamily: "'IBM Plex Mono'" }}>{r.budgetVal ? fmtMVR(r.budgetVal) : "—"}</span>
+                )}
+                <span style={{ color: T.sandDim }}>vs actual</span>
+                <span style={{ color: T.sand, fontFamily: "'Oswald'", fontWeight: 600 }}>{r.hasActual ? fmtMVR(r.actualVal) : "—"}</span>
+                {r.hasActual && r.attainVal != null && (
+                  <span style={{ color: T.sandDim, fontFamily: "'IBM Plex Mono'" }}>({r.attainVal.toFixed(0)}%)</span>
+                )}
+              </div>
+
+              <div style={{ marginLeft: "auto", fontSize: 12.5, fontWeight: 500, color: statusColor, flexShrink: 0 }}>
+                {status}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Filter bar — applies to every section below */}
         <div style={{
@@ -1084,70 +1246,6 @@ function FSMDashboard() {
                 />
               </Panel>
             </div>
-          </div>
-        )}
-
-        {section === "budget" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <Panel
-              title={`Monthly budget vs actual — ${year}`}
-              right={<span style={{ fontSize: 11.5, color: T.sandDim }}>{loadingBudgets ? "Loading…" : isEditor ? "Editable — saved for everyone" : "View-only — unlock editing in the sidebar to set budgets"}</span>}
-            >
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Sans'", fontSize: 13.5 }}>
-                  <thead>
-                    <tr>
-                      {["Month", "Volume budget (L)", "Actual volume", "Attainment", "Value budget (MVR)", "Actual value", "Attainment", "Status"].map((h, i) => (
-                        <th key={h} style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 10px", color: T.sandDim, fontWeight: 500, borderBottom: `1px solid ${T.line}`, whiteSpace: "nowrap" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monthlyBudgetRows.map((r) => {
-                      const attain = r.attainVol != null ? r.attainVol : r.attainVal;
-                      let status = "No budget set", statusColor = T.sandDim;
-                      if (!r.hasActual) { status = "No data yet"; statusColor = T.sandDim; }
-                      else if (attain != null) {
-                        if (attain >= 100) { status = "On track"; statusColor = T.green; }
-                        else if (attain >= 80) { status = "Behind"; statusColor = T.amber; }
-                        else { status = "At risk"; statusColor = T.red; }
-                      }
-                      return (
-                        <tr key={r.key} style={{ borderBottom: `1px solid ${T.line}` }}>
-                          <td style={{ padding: "7px 10px", color: T.sand }}>{r.label}</td>
-                          <td style={{ padding: "7px 10px", textAlign: "right" }}>
-                            <input
-                              type="number" defaultValue={r.budgetVol || ""} disabled={!isEditor}
-                              onBlur={(e) => saveBudget(r.key, "volume", e.target.value)}
-                              placeholder="—"
-                              style={{ width: 90, background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 3, color: isEditor ? T.sand : T.sandDim, padding: "4px 6px", textAlign: "right", fontSize: 13, opacity: isEditor ? 1 : 0.7 }}
-                            />
-                          </td>
-                          <td style={{ padding: "7px 10px", textAlign: "right", color: T.sandDim, fontVariantNumeric: "tabular-nums" }}>{r.hasActual ? fmtL(r.actualVol) : "—"}</td>
-                          <td style={{ padding: "7px 10px", textAlign: "right", color: T.sandDim, fontVariantNumeric: "tabular-nums" }}>{r.hasActual && r.attainVol != null ? `${r.attainVol.toFixed(0)}%` : "—"}</td>
-                          <td style={{ padding: "7px 10px", textAlign: "right" }}>
-                            <input
-                              type="number" defaultValue={r.budgetVal || ""} disabled={!isEditor}
-                              onBlur={(e) => saveBudget(r.key, "value", e.target.value)}
-                              placeholder="—"
-                              style={{ width: 100, background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 3, color: isEditor ? T.sand : T.sandDim, padding: "4px 6px", textAlign: "right", fontSize: 13, opacity: isEditor ? 1 : 0.7 }}
-                            />
-                          </td>
-                          <td style={{ padding: "7px 10px", textAlign: "right", color: T.sandDim, fontVariantNumeric: "tabular-nums" }}>{r.hasActual ? fmtMVR(r.actualVal) : "—"}</td>
-                          <td style={{ padding: "7px 10px", textAlign: "right", color: T.sandDim, fontVariantNumeric: "tabular-nums" }}>{r.hasActual && r.attainVal != null ? `${r.attainVal.toFixed(0)}%` : "—"}</td>
-                          <td style={{ padding: "7px 10px", textAlign: "right", color: statusColor, fontWeight: 500 }}>{status}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div style={{ fontSize: 11, color: T.sandDim, marginTop: 12, lineHeight: 1.6 }}>
-                Set a volume and/or value budget per month — click out of the field to save. Budgets are shared,
-                same as uploaded sales sheets. "On track" means actual has met or beaten budget; "Behind" is
-                80–99% of budget; "At risk" is under 80%.
-              </div>
-            </Panel>
           </div>
         )}
 
