@@ -28,6 +28,8 @@
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <!-- PapaParse — CSV parsing for the sales-sheet uploader -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- PptxGenJS — client-side PowerPoint generation for the Export PPT feature -->
+<script src="https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
 <!-- Firebase (compat SDK — works as plain globals, no bundler needed) -->
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
@@ -166,6 +168,11 @@ async function storageSetChunked(key, value) {
     return true;
   } catch (e) { return false; }
 }
+
+// FSM's real logo, embedded once and reused for both the sidebar and any
+// exported PowerPoint, so the file never depends on a separate image asset.
+const FSM_LOGO_BASE64 = "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";
+const FSM_LOGO_DATA_URL = `data:image/png;base64,${FSM_LOGO_BASE64}`;
 
 const FONT_LINK_ID = "fsm-fonts";
 if (typeof document !== "undefined" && !document.getElementById(FONT_LINK_ID)) {
@@ -323,6 +330,8 @@ const ICON_PATHS = {
   radar: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><path d="M12 12L18.5 6.5" /><circle cx="12" cy="12" r="0.8" fill="currentColor" /></>,
   circle: <circle cx="12" cy="12" r="9" />,
   upload: <><path d="M12 3.5v11.5" /><path d="M7.2 8.3 12 3.5l4.8 4.8" /><path d="M4 20.5h16" /></>,
+  download: <><path d="M12 3.5v11.5" /><path d="M7.2 11.7 12 16.5l4.8-4.8" /><path d="M4 20.5h16" /></>,
+  fileslides: <><rect x="5" y="3" width="14" height="18" rx="1.5" /><line x1="8" y1="8" x2="16" y2="8" /><line x1="8" y1="12" x2="16" y2="12" /><line x1="8" y1="16" x2="13" y2="16" /></>,
   chevronright: <polyline points="9 6 15 12 9 18" />,
   filter: <polygon points="4 4 20 4 14 12.5 14 19 10 21 10 12.5" />,
   x: <><line x1="6" y1="6" x2="18" y2="18" /><line x1="6" y1="18" x2="18" y2="6" /></>,
@@ -468,7 +477,7 @@ const NAV = [
   { key: "categories", label: "Categories", icon: "layers" },
   { key: "customers", label: "Customers", icon: "users" },
   { key: "profitability", label: "Profitability", icon: "dollarsign" },
-  { key: "whatif", label: "What if", icon: "sliders" },
+  { key: "whatif", label: "Predictions", icon: "sliders" },
   { key: "competitor", label: "Competitor", icon: "radar" },
 ];
 
@@ -542,6 +551,18 @@ function FSMDashboard() {
 
   // Global filters — applied on top of raw/uploaded data, before every downstream calculation
   const [filters, setFilters] = useState({ atoll: "", island: "", shippingPoint: "", product: "", category: "", channel: "" });
+  const [excludeCustomers, setExcludeCustomers] = useState([]);
+  const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
+  const [customerFilterSearch, setCustomerFilterSearch] = useState("");
+
+  // PowerPoint export
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportSections, setExportSections] = useState({
+    overview: true, yoy: true, breakdowns: true, categories: true, customers: true, profitability: true,
+  });
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
 
   const filterOptions = useMemo(() => ({
     atoll: [...new Set(rawData.map((r) => r.atoll).filter(Boolean))].sort(),
@@ -550,12 +571,14 @@ function FSMDashboard() {
     product: [...new Set(rawData.map((r) => r.product).filter(Boolean))].sort(),
     category: [...new Set(rawData.map((r) => normCategory(r.category)))].sort(),
     channel: [...new Set(rawData.map((r) => r.channel).filter(Boolean))].sort(),
+    customer: [...new Set(rawData.map((r) => r.customer).filter(Boolean))].sort(),
   }), [rawData]);
 
-  const activeFilterCount = Object.values(filters).filter(Boolean).length;
+  const activeFilterCount = Object.values(filters).filter(Boolean).length + (excludeCustomers.length > 0 ? 1 : 0);
 
   const data = useMemo(() => {
     if (activeFilterCount === 0) return rawData;
+    const excludeSet = new Set(excludeCustomers);
     return rawData.filter((r) => {
       if (filters.atoll && r.atoll !== filters.atoll) return false;
       if (filters.island && r.island !== filters.island) return false;
@@ -563,9 +586,10 @@ function FSMDashboard() {
       if (filters.product && r.product !== filters.product) return false;
       if (filters.category && normCategory(r.category) !== filters.category) return false;
       if (filters.channel && r.channel !== filters.channel) return false;
+      if (excludeSet.has(r.customer)) return false;
       return true;
     });
-  }, [rawData, filters, activeFilterCount]);
+  }, [rawData, filters, excludeCustomers, activeFilterCount]);
 
   // Load shared sheets (visible to anyone who opens this dashboard) on mount
   React.useEffect(() => {
@@ -740,6 +764,38 @@ function FSMDashboard() {
     });
   }, [data, years]);
 
+  // Generic month-by-month trend for the top N entities of a given dimension
+  // (island, shippingPoint, atoll, customer, or normalized category), for
+  // the currently selected year. Used to give Locations, Customers, and
+  // Categories a "month by month" view alongside their year-by-year tables.
+  function useMonthlyTrend(dimField, topN, normalizeFn) {
+    return useMemo(() => {
+      const norm = normalizeFn || ((v) => v || "");
+      const yearRows = data.filter((r) => r.year === year);
+      const totals = new Map();
+      yearRows.forEach((r) => {
+        const k = norm(r[dimField]);
+        if (!k) return;
+        totals.set(k, (totals.get(k) || 0) + r.quantity);
+      });
+      const top = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([k]) => k);
+      const monthRows = MONTHS.map((label, m) => {
+        const row = { month: label };
+        top.forEach((k) => {
+          row[k] = sum(yearRows.filter((r) => r.month === m && norm(r[dimField]) === k), "quantity");
+        });
+        return row;
+      });
+      return { top, monthRows };
+    }, [data, year, dimField, topN]);
+  }
+
+  const islandMonthlyTrend = useMonthlyTrend("island", 5);
+  const customerMonthlyTrend = useMonthlyTrend("customer", 5);
+  const categoryMonthlyTrend = useMonthlyTrend("category", 5, normCategory);
+
+  const TREND_COLORS = [T.amber, T.cyan, T.green, T.red, "#9B7EDE"];
+
   const byIsland = useMemo(() => {
     const names = [...new Set(data.map((r) => r.island).filter(Boolean))];
     return names.map((isl) => ({
@@ -850,6 +906,17 @@ function FSMDashboard() {
   const totalMargin = sum(mtd, "margin");
   const marginPct = curVal ? (totalMargin / curVal) * 100 : 0;
 
+  // Monthly gross profit trend for the selected year — GP value and blended
+  // margin % side by side, so a margin squeeze shows up even in a month
+  // where revenue itself looks fine.
+  const monthlyGP = useMemo(() => {
+    return MONTHS.map((label, m) => {
+      const rows = data.filter((r) => r.year === year && r.month === m);
+      const val = sum(rows, "value"), margin = sum(rows, "margin");
+      return { month: label, GP: margin, "Margin %": val ? +((margin / val) * 100).toFixed(1) : 0 };
+    });
+  }, [data, year]);
+
   // Sales by category (SOE, Government, Resorts, Island Delivery, Bunker, etc.)
   const byCategory = useMemo(() => {
     const cats = [...new Set(mtd.map((r) => normCategory(r.category)))];
@@ -859,6 +926,21 @@ function FSMDashboard() {
       return { category: cat, quantity: qty, value: val, margin, gpPerLitre: qty ? margin / qty : 0, customers: uniq(rows, "customer") };
     }).filter((c) => c.quantity > 0).sort((a, b) => b.quantity - a.quantity);
   }, [mtd]);
+
+  // Category volume, full year vs prior year
+  const byCategoryYear = useMemo(() => {
+    const cats = [...new Set(data.map((r) => normCategory(r.category)))];
+    return cats.map((cat) => ({
+      category: cat,
+      cur: sum(data.filter((r) => r.year === year && normCategory(r.category) === cat), "quantity"),
+      prior: sum(data.filter((r) => r.year === year - 1 && normCategory(r.category) === cat), "quantity"),
+      curVal: sum(data.filter((r) => r.year === year && normCategory(r.category) === cat), "value"),
+    })).filter((r) => r.cur > 0 || r.prior > 0).sort((a, b) => b.cur - a.cur);
+  }, [data, year]);
+
+  // Which categories help vs. hurt margin the most this period — same data as
+  // byCategory, just ranked by gross profit instead of volume.
+  const categoryGPRanked = useMemo(() => [...byCategory].sort((a, b) => b.margin - a.margin), [byCategory]);
 
   // Below-cost sales — line items where net value is under COGS, kept separate
   // from normal profitability so loss-making volume doesn't hide inside blended margins.
@@ -913,6 +995,189 @@ function FSMDashboard() {
     borderRadius: 4, padding: "7px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 13,
   };
 
+  // ---------- PowerPoint export ----------
+  // Builds a branded deck straight from whatever's currently on screen — the
+  // selected month/year, active filters, and excluded customers all carry
+  // through, so the export always matches what the viewer is actually
+  // looking at. Tables and charts are native PowerPoint objects (not
+  // pasted-in images), so the numbers stay editable/copyable in the deck.
+  const PPT_NAVY = "0A1C29", PPT_PANEL = "12293D", PPT_AMBER = "E8A33D", PPT_CYAN = "5FA8D3", PPT_SAND = "EDE6D6", PPT_DIM = "9FB3BE";
+
+  function pptAddTableSlide(pptx, title, subtitle, columns, rows, maxRows) {
+    const slide = pptx.addSlide();
+    slide.background = { color: PPT_NAVY };
+    slide.addText(title, { x: 0.4, y: 0.3, w: 12.5, h: 0.5, fontSize: 22, bold: true, color: PPT_SAND, fontFace: "Arial" });
+    if (subtitle) {
+      slide.addText(subtitle, { x: 0.4, y: 0.78, w: 12.5, h: 0.3, fontSize: 12, color: PPT_DIM, fontFace: "Arial" });
+    }
+    const header = columns.map((c) => ({
+      text: c.label,
+      options: { bold: true, color: PPT_NAVY, fill: { color: PPT_AMBER }, fontSize: 10, align: c.align === "right" ? "right" : "left" },
+    }));
+    const body = rows.slice(0, maxRows || 18).map((r, i) =>
+      columns.map((c) => ({
+        text: String(c.render ? c.render(r, i) : (r[c.key] ?? "")),
+        options: { color: PPT_SAND, fontSize: 10, align: c.align === "right" ? "right" : "left", fill: { color: i % 2 === 0 ? PPT_PANEL : PPT_NAVY } },
+      }))
+    );
+    slide.addTable([header, ...body], { x: 0.4, y: 1.2, w: 12.5, autoPage: false, border: { type: "solid", color: "1E3D50", pt: 0.5 }, fontFace: "Arial" });
+    if (rows.length > (maxRows || 18)) {
+      slide.addText(`Showing top ${maxRows || 18} of ${rows.length} rows.`, { x: 0.4, y: 7.0, w: 8, h: 0.3, fontSize: 9, italic: true, color: PPT_DIM, fontFace: "Arial" });
+    }
+    return slide;
+  }
+
+  function pptAddChartSlide(pptx, title, subtitle, chartType, labels, series, colors, valueFmt) {
+    const slide = pptx.addSlide();
+    slide.background = { color: PPT_NAVY };
+    slide.addText(title, { x: 0.4, y: 0.3, w: 12.5, h: 0.5, fontSize: 22, bold: true, color: PPT_SAND, fontFace: "Arial" });
+    if (subtitle) {
+      slide.addText(subtitle, { x: 0.4, y: 0.78, w: 12.5, h: 0.3, fontSize: 12, color: PPT_DIM, fontFace: "Arial" });
+    }
+    const chartData = series.map((s, i) => ({ name: s.name, labels, values: s.values }));
+    slide.addChart(chartType, chartData, {
+      x: 0.4, y: 1.3, w: 12.5, h: 5.6,
+      chartColors: colors,
+      catAxisLabelColor: PPT_DIM, valAxisLabelColor: PPT_DIM,
+      catAxisLineColor: "1E3D50", valAxisLineColor: "1E3D50",
+      showLegend: series.length > 1, legendColor: PPT_DIM, legendFontSize: 11,
+      dataLabelColor: PPT_SAND, showTitle: false,
+      lineDataSymbol: "circle", lineSize: 2.5,
+    });
+    return slide;
+  }
+
+  function pptFilterSummary() {
+    const parts = [];
+    if (filters.atoll) parts.push(`Atoll: ${filters.atoll}`);
+    if (filters.island) parts.push(`Island: ${filters.island}`);
+    if (filters.shippingPoint) parts.push(`Shipping point: ${filters.shippingPoint}`);
+    if (filters.product) parts.push(`Product: ${filters.product}`);
+    if (filters.category) parts.push(`Category: ${filters.category}`);
+    if (filters.channel) parts.push(`Channel: ${filters.channel}`);
+    if (excludeCustomers.length) parts.push(`${excludeCustomers.length} customer(s) excluded`);
+    return parts.length ? parts.join("  •  ") : "No filters applied";
+  }
+
+  async function generatePPT() {
+    setExporting(true);
+    setExportError("");
+    try {
+      const pptx = new PptxGenJS();
+      pptx.defineLayout({ name: "FSM_WIDE", width: 13.33, height: 7.5 });
+      pptx.layout = "FSM_WIDE";
+
+      // Title slide
+      const title = pptx.addSlide();
+      title.background = { color: PPT_NAVY };
+      title.addImage({ data: FSM_LOGO_DATA_URL, x: 0.6, y: 0.6, w: 0.8, h: 0.8 });
+      title.addText("FSM Sales Report", { x: 0.5, y: 2.6, w: 12.3, h: 0.9, fontSize: 40, bold: true, color: PPT_SAND, fontFace: "Arial" });
+      title.addText(`${MONTHS[month]} ${year}  •  vs ${MONTHS[month]} ${year - 1}`, { x: 0.5, y: 3.5, w: 12.3, h: 0.5, fontSize: 18, color: PPT_AMBER, fontFace: "Arial" });
+      title.addText(pptFilterSummary(), { x: 0.5, y: 4.0, w: 12.3, h: 0.4, fontSize: 12, color: PPT_DIM, fontFace: "Arial" });
+      title.addText(`Generated ${new Date().toLocaleDateString()} from the FSM Sales Intelligence Dashboard`, { x: 0.5, y: 6.9, w: 12.3, h: 0.3, fontSize: 10, color: PPT_DIM, fontFace: "Arial" });
+
+      if (exportSections.overview) {
+        const kpi = pptx.addSlide();
+        kpi.background = { color: PPT_NAVY };
+        kpi.addText("Overview — KPIs", { x: 0.4, y: 0.3, w: 12.5, h: 0.5, fontSize: 22, bold: true, color: PPT_SAND, fontFace: "Arial" });
+        kpi.addText(`${MONTHS[month]} ${year}`, { x: 0.4, y: 0.78, w: 12.5, h: 0.3, fontSize: 12, color: PPT_DIM, fontFace: "Arial" });
+        const kpiRows = [
+          ["Volume sold", fmtL(curQty), fmtL(priorQty), changeLabel(curQty, priorQty)],
+          ["Sales value", fmtMVR(curVal), fmtMVR(priorVal), changeLabel(curVal, priorVal)],
+          ["Active customers", String(curCust), String(priorCust), changeLabel(curCust, priorCust)],
+          ["Avg. rate / litre", `MVR ${curAvg.toFixed(2)}`, `MVR ${priorAvg.toFixed(2)}`, changeLabel(curAvg, priorAvg)],
+        ];
+        const header = ["Metric", `${year}`, `${year - 1}`, "Change"].map((t) => ({ text: t, options: { bold: true, color: PPT_NAVY, fill: { color: PPT_AMBER }, fontSize: 12 } }));
+        const body = kpiRows.map((r, i) => r.map((v) => ({ text: v, options: { color: PPT_SAND, fontSize: 12, fill: { color: i % 2 === 0 ? PPT_PANEL : PPT_NAVY } } })));
+        kpi.addTable([header, ...body], { x: 0.4, y: 1.3, w: 8, border: { type: "solid", color: "1E3D50", pt: 0.5 }, fontFace: "Arial" });
+
+        pptAddChartSlide(
+          pptx, "Monthly sales volume by year", `${MONTHS[month]} ${year} view — full year trend`,
+          pptx.ChartType.line, monthlyByYear.map((r) => r.month),
+          years.map((y, i) => ({ name: String(y), values: monthlyByYear.map((r) => r[y] || 0) })),
+          years.map((y, i) => (i === years.length - 1 ? PPT_AMBER : PPT_CYAN))
+        );
+      }
+
+      if (exportSections.yoy) {
+        pptAddTableSlide(pptx, "Year on year", `${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1}`,
+          [{ key: "metric", label: "Metric" }, { key: "py", label: `${year - 1}` }, { key: "cy", label: `${year}` }, { key: "change", label: "Change" }],
+          [
+            { metric: "Volume sold", py: fmtL(priorQty), cy: fmtL(curQty), change: changeLabel(curQty, priorQty) },
+            { metric: "Sales value", py: fmtMVR(priorVal), cy: fmtMVR(curVal), change: changeLabel(curVal, priorVal) },
+            { metric: "Active customers", py: priorCust, cy: curCust, change: changeLabel(curCust, priorCust) },
+            { metric: "Avg. rate / litre", py: `MVR ${priorAvg.toFixed(2)}`, cy: `MVR ${curAvg.toFixed(2)}`, change: changeLabel(curAvg, priorAvg) },
+          ]
+        );
+      }
+
+      if (exportSections.breakdowns) {
+        pptAddTableSlide(pptx, "By atoll — volume", `${year} vs ${year - 1}`,
+          [{ key: "atoll", label: "Atoll" }, { key: "prior", label: `${year - 1}`, render: (r) => fmtL(r.prior) }, { key: "cur", label: `${year}`, render: (r) => fmtL(r.cur) }, { key: "change", label: "Change", render: (r) => changeLabel(r.cur, r.prior) }],
+          byAtoll);
+        pptAddTableSlide(pptx, "By island — volume", `Top 20 of ${byIsland.length}, ${year} vs ${year - 1}`,
+          [{ key: "island", label: "Island" }, { key: "prior", label: `${year - 1}`, render: (r) => fmtL(r.prior) }, { key: "cur", label: `${year}`, render: (r) => fmtL(r.cur) }, { key: "change", label: "Change", render: (r) => changeLabel(r.cur, r.prior) }],
+          byIsland, 20);
+        pptAddTableSlide(pptx, "By shipping point / site — volume", `${year} vs ${year - 1}`,
+          [{ key: "shippingPoint", label: "Shipping point" }, { key: "prior", label: `${year - 1}`, render: (r) => fmtL(r.prior) }, { key: "cur", label: `${year}`, render: (r) => fmtL(r.cur) }, { key: "change", label: "Change", render: (r) => changeLabel(r.cur, r.prior) }],
+          byShipPoint);
+        pptAddChartSlide(
+          pptx, "Month by month volume — top 5 islands", `${year}`,
+          pptx.ChartType.line, islandMonthlyTrend.monthRows.map((r) => r.month),
+          islandMonthlyTrend.top.map((k) => ({ name: k, values: islandMonthlyTrend.monthRows.map((r) => r[k] || 0) })),
+          [PPT_AMBER, PPT_CYAN, "6FB98F", "D9695F", "9B7EDE"]
+        );
+      }
+
+      if (exportSections.categories) {
+        pptAddTableSlide(pptx, "By category — volume", `${year} vs ${year - 1}`,
+          [{ key: "category", label: "Category" }, { key: "prior", label: `${year - 1}`, render: (r) => fmtL(r.prior) }, { key: "cur", label: `${year}`, render: (r) => fmtL(r.cur) }, { key: "change", label: "Change", render: (r) => changeLabel(r.cur, r.prior) }],
+          byCategoryYear);
+        pptAddTableSlide(pptx, "Sales by category", `${MONTHS[month]} ${year}`,
+          [{ key: "category", label: "Category" }, { key: "quantity", label: "Volume", render: (r) => fmtL(r.quantity) }, { key: "value", label: "Sales value", render: (r) => fmtMVR(r.value) }, { key: "margin", label: "Gross profit", render: (r) => fmtMVR(r.margin) }],
+          byCategory);
+      }
+
+      if (exportSections.customers) {
+        pptAddTableSlide(pptx, "Customer concentration", `${MONTHS[month]} ${year} — top 20 by cumulative volume share (top 10: ${top10Share.toFixed(1)}%, top 20: ${top20Share.toFixed(1)}%)`,
+          [{ key: "customer", label: "Customer" }, { key: "quantity", label: "Volume", render: (r) => fmtL(r.quantity) }, { key: "share", label: "Share", render: (r) => `${r.share.toFixed(1)}%` }, { key: "cumShare", label: "Cumulative", render: (r) => `${r.cumShare.toFixed(1)}%` }],
+          customerConcentration, 20);
+        pptAddTableSlide(pptx, "Top 10 customers — volume", `${year} vs ${year - 1}`,
+          [{ key: "customer", label: "Customer" }, { key: "prior", label: `${year - 1}`, render: (r) => fmtL(r.prior) }, { key: "cur", label: `${year}`, render: (r) => fmtL(r.cur) }, { key: "change", label: "Change", render: (r) => changeLabel(r.cur, r.prior) }],
+          byCustomer);
+      }
+
+      if (exportSections.profitability) {
+        pptAddChartSlide(
+          pptx, "GP analysis — monthly trend", `${year}`,
+          pptx.ChartType.line, monthlyGP.map((r) => r.month),
+          [{ name: "Gross profit (MVR)", values: monthlyGP.map((r) => r.GP) }],
+          [PPT_AMBER]
+        );
+        pptAddTableSlide(pptx, "Product performance", `${MONTHS[month]} ${year}`,
+          [{ key: "product", label: "Product" }, { key: "quantity", label: "Volume", render: (r) => fmtL(r.quantity) }, { key: "value", label: "Sales value", render: (r) => fmtMVR(r.value) }, { key: "margin", label: "Gross profit", render: (r) => fmtMVR(r.margin) }, { key: "gpPerLitre", label: "GP / litre", render: (r) => `MVR ${r.gpPerLitre.toFixed(2)}` }],
+          byProduct);
+        pptAddTableSlide(pptx, "Category GP ranking", `${MONTHS[month]} ${year} — best to worst by gross profit`,
+          [{ key: "category", label: "Category" }, { key: "value", label: "Sales value", render: (r) => fmtMVR(r.value) }, { key: "margin", label: "Gross profit", render: (r) => fmtMVR(r.margin) }, { key: "gpPerLitre", label: "GP / litre", render: (r) => `MVR ${r.gpPerLitre.toFixed(2)}` }],
+          categoryGPRanked);
+        if (belowCostSales.length > 0) {
+          pptAddTableSlide(pptx, "Below-cost sales", `${MONTHS[month]} ${year} — ${belowCostShareOfVolume.toFixed(1)}% of period volume, ${fmtMVR(belowCostMargin)} margin lost`,
+            [{ key: "customer", label: "Customer" }, { key: "category", label: "Category" }, { key: "quantity", label: "Volume", render: (r) => fmtL(r.quantity) }, { key: "margin", label: "Margin", render: (r) => fmtMVR(r.margin) }],
+            belowCostSales, 20);
+        }
+      }
+
+      const filenameSafe = `FSM-Sales-Report-${MONTHS[month]}${year}`.replace(/\s+/g, "");
+      await pptx.writeFile({ fileName: `${filenameSafe}.pptx` });
+      setExportOpen(false);
+    } catch (err) {
+      console.error(err);
+      setExportError("Couldn't generate the PowerPoint — see the browser console for details.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <ThemeContext.Provider value={T}>
     <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: "'IBM Plex Sans'" }}>
@@ -921,7 +1186,7 @@ function FSMDashboard() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px 4px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <img
-              src="data:image/png;base64,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" alt="FSM logo" width="26" height="26"
+              src={FSM_LOGO_DATA_URL} alt="FSM logo" width="26" height="26"
               style={{ borderRadius: 6, background: "#fff", padding: 2, objectFit: "contain", flexShrink: 0 }}
             />
             <div style={{ fontFamily: "'Oswald'", fontSize: 19, color: T.sand, fontWeight: 600, letterSpacing: 0.3, lineHeight: 1 }}>
@@ -1093,6 +1358,60 @@ function FSMDashboard() {
           <div style={{ color: T.sandDim, fontSize: 12.5, marginLeft: 4 }}>
             vs {MONTHS[month]} {year - 1} <Icon name="chevronright" size={11} style={{ display: "inline", verticalAlign: -1 }} />
           </div>
+
+          <div style={{ marginLeft: "auto", position: "relative" }}>
+            <button
+              onClick={() => setExportOpen((o) => !o)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, background: T.panel,
+                border: `1px solid ${T.line}`, borderRadius: 4, color: T.sand,
+                padding: "8px 12px", fontSize: 13, cursor: "pointer",
+              }}
+            >
+              <Icon name="fileslides" size={14} />
+              Export PPT
+            </button>
+            {exportOpen && (
+              <div style={{
+                position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20,
+                width: 280, background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 4,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.35)", padding: 14,
+              }}>
+                <div style={{ fontFamily: "'Oswald'", fontSize: 14, color: T.sand, marginBottom: 4 }}>
+                  Export {MONTHS[month]} {year} as PowerPoint
+                </div>
+                <div style={{ fontSize: 11, color: T.sandDim, marginBottom: 10, lineHeight: 1.5 }}>
+                  Uses whatever month, filters, and excluded customers are currently set.
+                </div>
+                {[
+                  ["overview", "Overview"], ["yoy", "Year on year"], ["breakdowns", "Locations"],
+                  ["categories", "Categories"], ["customers", "Customers"], ["profitability", "Profitability"],
+                ].map(([key, label]) => (
+                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, color: T.sand, cursor: "pointer" }}>
+                    <input
+                      type="checkbox" checked={exportSections[key]}
+                      onChange={(e) => setExportSections((s) => ({ ...s, [key]: e.target.checked }))}
+                    />
+                    {label}
+                  </label>
+                ))}
+                {exportError && <div style={{ fontSize: 11, color: T.red, marginTop: 8 }}>{exportError}</div>}
+                <button
+                  onClick={generatePPT}
+                  disabled={exporting || !Object.values(exportSections).some(Boolean)}
+                  style={{
+                    width: "100%", marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    background: T.amber, border: "none", borderRadius: 4, color: T.bg, fontWeight: 600,
+                    padding: "8px 10px", fontSize: 12.5, cursor: exporting ? "default" : "pointer",
+                    opacity: exporting || !Object.values(exportSections).some(Boolean) ? 0.6 : 1,
+                  }}
+                >
+                  <Icon name="download" size={13} />
+                  {exporting ? "Generating…" : "Download PowerPoint"}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Live budget strip — tracks whichever month/year is selected above */}
@@ -1195,9 +1514,71 @@ function FSMDashboard() {
               {filterOptions.channel.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           )}
+
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setCustomerFilterOpen((o) => !o)}
+              style={{
+                ...selectStyle, display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                color: excludeCustomers.length > 0 ? T.amber : T.sand,
+              }}
+            >
+              <Icon name="users" size={12} />
+              {excludeCustomers.length > 0 ? `${excludeCustomers.length} customer${excludeCustomers.length === 1 ? "" : "s"} excluded` : "Exclude customers"}
+            </button>
+            {customerFilterOpen && (
+              <div style={{
+                position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+                width: 280, maxHeight: 340, display: "flex", flexDirection: "column",
+                background: T.panelAlt, border: `1px solid ${T.line}`, borderRadius: 4,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+              }}>
+                <div style={{ padding: 8, borderBottom: `1px solid ${T.line}` }}>
+                  <input
+                    autoFocus type="text" value={customerFilterSearch}
+                    onChange={(e) => setCustomerFilterSearch(e.target.value)}
+                    placeholder="Search customers…"
+                    style={{ width: "100%", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 3, color: T.sand, padding: "6px 8px", fontSize: 12.5, boxSizing: "border-box" }}
+                  />
+                </div>
+                <div style={{ overflowY: "auto", padding: 4 }}>
+                  {filterOptions.customer
+                    .filter((c) => c.toLowerCase().includes(customerFilterSearch.toLowerCase()))
+                    .slice(0, 200)
+                    .map((c) => {
+                      const checked = excludeCustomers.includes(c);
+                      return (
+                        <label key={c} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", fontSize: 12, color: T.sand, cursor: "pointer" }}>
+                          <input
+                            type="checkbox" checked={checked}
+                            onChange={() => setExcludeCustomers((prev) => checked ? prev.filter((x) => x !== c) : [...prev, c])}
+                          />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
+                        </label>
+                      );
+                    })}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: 8, borderTop: `1px solid ${T.line}` }}>
+                  <button
+                    onClick={() => setExcludeCustomers([])}
+                    style={{ background: "none", border: "none", color: T.sandDim, fontSize: 12, cursor: "pointer", padding: 0 }}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => setCustomerFilterOpen(false)}
+                    style={{ background: "none", border: `1px solid ${T.line}`, borderRadius: 3, color: T.sand, fontSize: 12, cursor: "pointer", padding: "4px 10px" }}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {activeFilterCount > 0 && (
             <button
-              onClick={() => setFilters({ atoll: "", island: "", shippingPoint: "", product: "", category: "", channel: "" })}
+              onClick={() => { setFilters({ atoll: "", island: "", shippingPoint: "", product: "", category: "", channel: "" }); setExcludeCustomers([]); }}
               style={{
                 display: "flex", alignItems: "center", gap: 5, background: "none",
                 border: `1px solid ${T.line}`, borderRadius: 4, color: T.amber,
@@ -1279,6 +1660,10 @@ function FSMDashboard() {
 
         {section === "breakdowns" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <Panel title={`Month by month volume — top 5 islands, ${year}`}>
+              <SimpleLineChart data={islandMonthlyTrend.monthRows} seriesKeys={islandMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
+              <ChartLegend seriesKeys={islandMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+            </Panel>
             <Panel title={`By atoll — volume, ${year} vs ${year - 1}`}>
               <Table
                 columns={[
@@ -1320,6 +1705,22 @@ function FSMDashboard() {
 
         {section === "categories" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <Panel title={`Month by month volume — top 5 categories, ${year}`}>
+              <SimpleLineChart data={categoryMonthlyTrend.monthRows} seriesKeys={categoryMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
+              <ChartLegend seriesKeys={categoryMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+            </Panel>
+            <Panel title={`By category — volume, ${year} vs ${year - 1}`}>
+              <Table
+                columns={[
+                  { key: "category", label: "Category", emphasize: true },
+                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
+                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
+                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
+                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
+                ]}
+                rows={byCategoryYear}
+              />
+            </Panel>
             <Panel
               title={`Sales by category — ${MONTHS[month]} ${year}`}
               right={<span style={{ fontSize: 11.5, color: T.sandDim }}>SOE, Government, Resorts, Island Delivery, Bunker, and more</span>}
@@ -1351,6 +1752,24 @@ function FSMDashboard() {
               <StatCard label="Top 20 customer share" value={`${top20Share.toFixed(1)}%`} sub="of this period's volume" />
               <StatCard label="Active customers" value={customerConcentration.length} sub={`in ${MONTHS[month]} ${year}`} />
             </div>
+
+            <Panel title={`Month by month volume — top 5 customers, ${year}`}>
+              <SimpleLineChart data={customerMonthlyTrend.monthRows} seriesKeys={customerMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
+              <ChartLegend seriesKeys={customerMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+            </Panel>
+
+            <Panel title={`Top 10 customers — volume, ${year} vs ${year - 1}`}>
+              <Table
+                columns={[
+                  { key: "customer", label: "Customer", emphasize: true },
+                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
+                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
+                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
+                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
+                ]}
+                rows={byCustomer}
+              />
+            </Panel>
 
             <Panel title={`Customer concentration — ${MONTHS[month]} ${year}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Top 20, by cumulative volume share</span>}>
               <Table
@@ -1414,9 +1833,32 @@ function FSMDashboard() {
         {section === "profitability" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-              <StatCard label="Gross profit (period)" value={fmtMVR(totalMargin)} sub={`${marginPct.toFixed(1)}% margin`} />
+              <StatCard label="Gross profit (period)" value={fmtMVR(totalMargin)} sub={`${marginPct.toFixed(1)}% margin`} tone={totalMargin >= 0 ? "up" : "down"} />
               <StatCard label="Avg. GP / litre" value={`MVR ${curQty ? (totalMargin / curQty).toFixed(2) : "0.00"}`} sub="blended across products" />
             </div>
+
+            <Panel title={`GP analysis — monthly trend, ${year}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Gross profit value and blended margin %</span>}>
+              <SimpleLineChart data={monthlyGP} seriesKeys={["GP"]} T={T} fmt={fmtMVR} colors={[T.amber]} />
+              <ChartLegend seriesKeys={["GP"]} T={T} colors={[T.amber]} />
+              <div style={{ marginTop: 18 }}>
+                <SimpleLineChart data={monthlyGP} seriesKeys={["Margin %"]} T={T} fmt={(v) => `${v.toFixed(1)}%`} colors={[T.cyan]} height={180} />
+                <ChartLegend seriesKeys={["Margin %"]} T={T} colors={[T.cyan]} />
+              </div>
+            </Panel>
+
+            <Panel title={`Category GP ranking — ${MONTHS[month]} ${year}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Best to worst by gross profit</span>}>
+              <Table
+                columns={[
+                  { key: "category", label: "Category", emphasize: true },
+                  { key: "quantity", label: "Volume", align: "right", render: (r) => fmtL(r.quantity) },
+                  { key: "value", label: "Sales value", align: "right", render: (r) => fmtMVR(r.value) },
+                  { key: "margin", label: "Gross profit", align: "right", render: (r) => fmtMVR(r.margin) },
+                  { key: "gpPerLitre", label: "GP / litre", align: "right", render: (r) => `MVR ${r.gpPerLitre.toFixed(2)}` },
+                ]}
+                rows={categoryGPRanked}
+              />
+            </Panel>
+
             <Panel title={`Product performance — ${MONTHS[month]} ${year}`}>
               <Table
                 columns={[
