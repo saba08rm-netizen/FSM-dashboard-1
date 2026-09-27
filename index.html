@@ -315,6 +315,58 @@ function Table({ columns, rows }) {
   );
 }
 
+// Turns a { top, monthRows } trend object (top items + one row per month)
+// into an items-by-months matrix table — Jan..Dec across the top, one row
+// per island/customer/category/etc, with a Total column. This is the
+// month-by-month view used throughout Locations, Categories, and Customers,
+// in place of a single year-vs-year total.
+function MonthlyMatrixTable({ trend, dimLabel, fmt }) {
+  const T = useTheme();
+  const rows = trend.top.map((name) => {
+    const row = { name };
+    let total = 0;
+    trend.monthRows.forEach((mr) => { row[mr.month] = mr[name] || 0; total += mr[name] || 0; });
+    row.__total = total;
+    return row;
+  });
+  const columns = [
+    { key: "name", label: dimLabel, emphasize: true },
+    ...MONTHS.map((m) => ({ key: m, label: m, align: "right", render: (r) => fmt(r[m]) })),
+    { key: "__total", label: "Total", align: "right", render: (r) => fmt(r.__total) },
+  ];
+  if (rows.length === 0) {
+    return <div style={{ fontSize: 12.5, color: T.sandDim }}>No data for this year yet.</div>;
+  }
+  return <Table columns={columns} rows={rows} />;
+}
+
+// Same-month year-over-year comparison table — e.g. Aug 2026 vs Aug 2025,
+// one row per dimension value, ranked by the current period.
+function PeriodCompareTable({ rows, dimLabel, curLabel, priorLabel, fmt, maxRows }) {
+  const T = useTheme();
+  const shown = rows.filter((r) => r.cur > 0 || r.prior > 0).slice(0, maxRows || 25);
+  if (shown.length === 0) {
+    return <div style={{ fontSize: 12.5, color: T.sandDim }}>No data for either period yet.</div>;
+  }
+  const columns = [
+    { key: "name", label: dimLabel, emphasize: true },
+    { key: "prior", label: priorLabel, align: "right", render: (r) => fmt(r.prior) },
+    { key: "cur", label: curLabel, align: "right", render: (r) => fmt(r.cur) },
+    { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
+  ];
+  return (
+    <>
+      <Table columns={columns} rows={shown} />
+      {rows.length > shown.length && (
+        <div style={{ fontSize: 11, color: T.sandDim, marginTop: 10 }}>
+          Showing top {shown.length} of {rows.filter((r) => r.cur > 0 || r.prior > 0).length} with sales in either period.
+        </div>
+      )}
+    </>
+  );
+}
+
+
 // ---------- Minimal inline icon set (no external icon package needed) ----------
 const ICON_PATHS = {
   gauge: <><circle cx="12" cy="13" r="8" /><path d="M12 13l4-4" /><path d="M8 5.5 6.5 4M16 5.5 17.5 4" /></>,
@@ -790,11 +842,44 @@ function FSMDashboard() {
     }, [data, year, dimField, topN]);
   }
 
-  const islandMonthlyTrend = useMonthlyTrend("island", 5);
-  const customerMonthlyTrend = useMonthlyTrend("customer", 5);
-  const categoryMonthlyTrend = useMonthlyTrend("category", 5, normCategory);
+  // Same-month, year-over-year comparison by dimension — e.g. "Aug 2026 vs
+  // Aug 2025, by island". Unlike the month-by-month matrix above (which
+  // spans the whole selected year), this compares just the one selected
+  // month against that same month a year earlier, item by item.
+  function usePeriodCompare(dimField, normalizeFn) {
+    return useMemo(() => {
+      const norm = normalizeFn || ((v) => v || "");
+      const curMap = new Map(), priorMap = new Map();
+      mtd.forEach((r) => {
+        const k = norm(r[dimField]);
+        if (!k) return;
+        curMap.set(k, (curMap.get(k) || 0) + r.quantity);
+      });
+      mtdPrior.forEach((r) => {
+        const k = norm(r[dimField]);
+        if (!k) return;
+        priorMap.set(k, (priorMap.get(k) || 0) + r.quantity);
+      });
+      const keys = new Set([...curMap.keys(), ...priorMap.keys()]);
+      return [...keys]
+        .map((k) => ({ name: k, cur: curMap.get(k) || 0, prior: priorMap.get(k) || 0 }))
+        .sort((a, b) => b.cur - a.cur);
+    }, [mtd, mtdPrior, dimField]);
+  }
 
-  const TREND_COLORS = [T.amber, T.cyan, T.green, T.red, "#9B7EDE"];
+  const atollPeriodCompare = usePeriodCompare("atoll");
+  const islandPeriodCompare = usePeriodCompare("island");
+  const shipPointPeriodCompare = usePeriodCompare("shippingPoint");
+  const categoryPeriodCompare = usePeriodCompare("category", normCategory);
+  const customerPeriodCompare = usePeriodCompare("customer");
+
+  const islandMonthlyTrend = useMonthlyTrend("island", 6);
+  const customerMonthlyTrend = useMonthlyTrend("customer", 6);
+  const categoryMonthlyTrend = useMonthlyTrend("category", 6, normCategory);
+  const atollMonthlyTrend = useMonthlyTrend("atoll", 6);
+  const shipPointMonthlyTrend = useMonthlyTrend("shippingPoint", 6);
+
+  const TREND_COLORS = [T.amber, T.cyan, T.green, T.red, "#9B7EDE", "#4FB0C6"];
 
   const byIsland = useMemo(() => {
     const names = [...new Set(data.map((r) => r.island).filter(Boolean))];
@@ -1660,66 +1745,52 @@ function FSMDashboard() {
 
         {section === "breakdowns" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <Panel title={`Month by month volume — top 5 islands, ${year}`}>
+            <Panel title={`Month by month volume — top 6 atolls, ${year}`}>
+              <SimpleLineChart data={atollMonthlyTrend.monthRows} seriesKeys={atollMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
+              <ChartLegend seriesKeys={atollMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+              <div style={{ marginTop: 14 }}>
+                <MonthlyMatrixTable trend={atollMonthlyTrend} dimLabel="Atoll" fmt={fmtL} />
+              </div>
+            </Panel>
+            <Panel title={`${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1} — by atoll`}>
+              <PeriodCompareTable rows={atollPeriodCompare} dimLabel="Atoll" curLabel={`${MONTHS[month]} ${year}`} priorLabel={`${MONTHS[month]} ${year - 1}`} fmt={fmtL} />
+            </Panel>
+
+            <Panel title={`Month by month volume — top 6 islands, ${year}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>of {byIsland.length} with sales</span>}>
               <SimpleLineChart data={islandMonthlyTrend.monthRows} seriesKeys={islandMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
               <ChartLegend seriesKeys={islandMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+              <div style={{ marginTop: 14 }}>
+                <MonthlyMatrixTable trend={islandMonthlyTrend} dimLabel="Island" fmt={fmtL} />
+              </div>
             </Panel>
-            <Panel title={`By atoll — volume, ${year} vs ${year - 1}`}>
-              <Table
-                columns={[
-                  { key: "atoll", label: "Atoll", emphasize: true },
-                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
-                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
-                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
-                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
-                ]}
-                rows={byAtoll}
-              />
+            <Panel title={`${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1} — by island`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Top 25</span>}>
+              <PeriodCompareTable rows={islandPeriodCompare} dimLabel="Island" curLabel={`${MONTHS[month]} ${year}`} priorLabel={`${MONTHS[month]} ${year - 1}`} fmt={fmtL} />
             </Panel>
-            <Panel title={`By island — volume, ${year} vs ${year - 1}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Top 20 of {byIsland.length}</span>}>
-              <Table
-                columns={[
-                  { key: "island", label: "Island", emphasize: true },
-                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
-                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
-                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
-                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
-                ]}
-                rows={byIsland.slice(0, 20)}
-              />
+
+            <Panel title={`Month by month volume — top 6 shipping points, ${year}`}>
+              <SimpleLineChart data={shipPointMonthlyTrend.monthRows} seriesKeys={shipPointMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
+              <ChartLegend seriesKeys={shipPointMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+              <div style={{ marginTop: 14 }}>
+                <MonthlyMatrixTable trend={shipPointMonthlyTrend} dimLabel="Shipping point" fmt={fmtL} />
+              </div>
             </Panel>
-            <Panel title={`By shipping point / site — volume, ${year} vs ${year - 1}`}>
-              <Table
-                columns={[
-                  { key: "shippingPoint", label: "Shipping point", emphasize: true },
-                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
-                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
-                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
-                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
-                ]}
-                rows={byShipPoint}
-              />
+            <Panel title={`${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1} — by shipping point`}>
+              <PeriodCompareTable rows={shipPointPeriodCompare} dimLabel="Shipping point" curLabel={`${MONTHS[month]} ${year}`} priorLabel={`${MONTHS[month]} ${year - 1}`} fmt={fmtL} />
             </Panel>
           </div>
         )}
 
         {section === "categories" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <Panel title={`Month by month volume — top 5 categories, ${year}`}>
+            <Panel title={`Month by month volume — top 6 categories, ${year}`}>
               <SimpleLineChart data={categoryMonthlyTrend.monthRows} seriesKeys={categoryMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
               <ChartLegend seriesKeys={categoryMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+              <div style={{ marginTop: 14 }}>
+                <MonthlyMatrixTable trend={categoryMonthlyTrend} dimLabel="Category" fmt={fmtL} />
+              </div>
             </Panel>
-            <Panel title={`By category — volume, ${year} vs ${year - 1}`}>
-              <Table
-                columns={[
-                  { key: "category", label: "Category", emphasize: true },
-                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
-                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
-                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
-                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
-                ]}
-                rows={byCategoryYear}
-              />
+            <Panel title={`${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1} — by category`}>
+              <PeriodCompareTable rows={categoryPeriodCompare} dimLabel="Category" curLabel={`${MONTHS[month]} ${year}`} priorLabel={`${MONTHS[month]} ${year - 1}`} fmt={fmtL} />
             </Panel>
             <Panel
               title={`Sales by category — ${MONTHS[month]} ${year}`}
@@ -1753,22 +1824,15 @@ function FSMDashboard() {
               <StatCard label="Active customers" value={customerConcentration.length} sub={`in ${MONTHS[month]} ${year}`} />
             </div>
 
-            <Panel title={`Month by month volume — top 5 customers, ${year}`}>
+            <Panel title={`Month by month volume — top 6 customers, ${year}`}>
               <SimpleLineChart data={customerMonthlyTrend.monthRows} seriesKeys={customerMonthlyTrend.top} T={T} fmt={fmtL} colors={TREND_COLORS} />
               <ChartLegend seriesKeys={customerMonthlyTrend.top} T={T} colors={TREND_COLORS} />
+              <div style={{ marginTop: 14 }}>
+                <MonthlyMatrixTable trend={customerMonthlyTrend} dimLabel="Customer" fmt={fmtL} />
+              </div>
             </Panel>
-
-            <Panel title={`Top 10 customers — volume, ${year} vs ${year - 1}`}>
-              <Table
-                columns={[
-                  { key: "customer", label: "Customer", emphasize: true },
-                  { key: "prior", label: `${year - 1}`, align: "right", render: (r) => fmtL(r.prior) },
-                  { key: "cur", label: `${year}`, align: "right", render: (r) => fmtL(r.cur) },
-                  { key: "change", label: "Change", align: "right", render: (r) => changeLabel(r.cur, r.prior) },
-                  { key: "curVal", label: "Sales value", align: "right", render: (r) => fmtMVR(r.curVal) },
-                ]}
-                rows={byCustomer}
-              />
+            <Panel title={`${MONTHS[month]} ${year} vs ${MONTHS[month]} ${year - 1} — by customer`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Top 25</span>}>
+              <PeriodCompareTable rows={customerPeriodCompare} dimLabel="Customer" curLabel={`${MONTHS[month]} ${year}`} priorLabel={`${MONTHS[month]} ${year - 1}`} fmt={fmtL} />
             </Panel>
 
             <Panel title={`Customer concentration — ${MONTHS[month]} ${year}`} right={<span style={{ fontSize: 11.5, color: T.sandDim }}>Top 20, by cumulative volume share</span>}>
